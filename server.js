@@ -99,14 +99,23 @@ app.post('/api/accounts',async(req,res)=>{
  }));
  created.forEach(a=>sessions.set(a.id,a));
 
- // Semua akun login paralel: satu perintah HTTP mengendalikan seluruh koneksi.
- // Tidak ada batas jumlah akun yang dibuat oleh aplikasi; batas praktis mengikuti
- // RAM/CPU/network server dan limit layanan WebSocket.
- const results=await Promise.all(created.map(async a=>{
-  try{await connectAccount(a)}
-  catch(e){a.status='error';a.error=safe(e.message)}
-  return {id:a.id,username:a.username,status:a.status,permissions:a.permissions,balance:a.balance||'',error:a.error||''};
- }));
+ // Login bertahap: satu perintah HTTP mengendalikan seluruh koneksi, tetapi
+ // WebSocket tidak dibuka sekaligus. Ini mencegah burst koneksi membuat server/API
+ // menolak akun setelah belasan/dua puluh koneksi. Tidak ada batas jumlah akun
+ // yang ditanamkan di aplikasi; akun diproses dalam batch kecil sampai selesai.
+ const LOGIN_BATCH_SIZE=Math.max(1,Math.min(5,Number(process.env.LOGIN_BATCH_SIZE)||5));
+ const LOGIN_BATCH_GAP_MS=Math.max(0,Number(process.env.LOGIN_BATCH_GAP_MS)||500);
+ const results=[];
+ for(let start=0;start<created.length;start+=LOGIN_BATCH_SIZE){
+  const batch=created.slice(start,start+LOGIN_BATCH_SIZE);
+  const batchResults=await Promise.all(batch.map(async a=>{
+   try{await connectAccount(a)}
+   catch(e){a.status='error';a.error=safe(e.message)}
+   return {id:a.id,username:a.username,status:a.status,permissions:a.permissions,balance:a.balance||'',error:a.error||''};
+  }));
+  results.push(...batchResults);
+  if(start+LOGIN_BATCH_SIZE<created.length)await wait(LOGIN_BATCH_GAP_MS);
+ }
  const ready=results.filter(a=>a.status==='ready').length;
  res.json({ok:true,count:results.length,ready,accounts:results});
 });
