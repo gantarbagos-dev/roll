@@ -2,31 +2,188 @@ const express=require('express');
 const http=require('http');
 const WebSocket=require('ws');
 const path=require('path');
+
 const app=express();
 const server=http.createServer(app);
 const WSS_URL='wss://developer.mig33.id/developer/ws';
 const sessions=new Map();
-app.use(express.json({limit:'256kb'}));
+const rollState={running:false,stop:false,room:'',delay:0,message:''};
+
+app.use(express.json({limit:'10mb'}));
 app.use(express.static(path.join(__dirname,'public')));
-function id(){return Math.random().toString(36).slice(2)+Date.now().toString(36)}
+
+function makeId(){return Math.random().toString(36).slice(2)+Date.now().toString(36)}
 function safe(s){return String(s||'').slice(0,300)}
-function closeSession(s){try{s.ws.close()}catch{} if(s.ping)clearInterval(s.ping); sessions.delete(s.id)}
-function connectAccount(account){return new Promise((resolve,reject)=>{
- const ws=new WebSocket(WSS_URL); account.ws=ws; account.status='connecting'; let settled=false;
- const done=(ok,err)=>{if(settled)return;settled=true;ok?resolve():reject(err)};
- ws.on('open',()=>{account.status='authenticating'});
- ws.on('message',raw=>{let m;try{m=JSON.parse(raw.toString())}catch{return} account.last=m;
-   if(m.type==='auth.required'){try{ws.send(JSON.stringify({type:'developer.login',username:account.username,password:account.password}))}catch(e){done(false,e)}}
-   else if(m.type==='session.ready'){account.status='ready';account.permissions=m.data?.developer?.permissions||[];account.wallet=m.data?.wallet||null;account.ping=setInterval(()=>{if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'ping'}))},40000);done(true);}
-   else if(m.type==='error' && !settled){account.status='error';done(false,new Error(m.data?.message||m.data?.error||'login failed'))}
+function closeSession(s){
+ try{s.ws?.close()}catch{}
+ if(s.ping)clearInterval(s.ping);
+ s.status='closed';
+}
+function wait(ms){return new Promise(r=>setTimeout(r,Math.max(0,ms)))}
+
+function connectAccount(account){
+ return new Promise((resolve,reject)=>{
+  let settled=false;
+  const finish=(ok,err)=>{
+   if(settled)return; settled=true;
+   if(ok)resolve(account); else reject(err);
+  };
+  let ws;
+  try{ws=new WebSocket(WSS_URL)}catch(e){finish(false,e);return}
+  account.ws=ws; account.status='connecting';
+
+  const timeout=setTimeout(()=>{
+   if(!settled){account.status='error';try{ws.close()}catch{};finish(false,new Error('Timeout login 15 detik'))}
+  },15000);
+
+  ws.on('open',()=>{account.status='authenticating'});
+
+  ws.on('message',raw=>{
+   let m; try{m=JSON.parse(raw.toString())}catch{return}
+   account.last=m;
+   if(m.type==='auth.required'){
+    try{ws.send(JSON.stringify({type:'developer.login',username:account.username,password:account.password}))}
+    catch(e){account.status='error';clearTimeout(timeout);finish(false,e)}
+   }else if(m.type==='session.ready'){
+    account.status='ready';
+    account.permissions=m.data?.developer?.permissions||[];
+    account.wallet=m.data?.wallet||null;
+    if(account.wallet)account.balance=account.wallet.label||String(account.wallet.balance_cr||'');
+    account.ping=setInterval(()=>{
+     if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'ping'}));
+    },40000);
+    clearTimeout(timeout); finish(true);
+   }else if(m.type==='wallet.balance.result'){
+    account.wallet=m.data?.wallet||account.wallet;
+    if(account.wallet)account.balance=account.wallet.label||String(account.wallet.balance_cr||'');
+   }else if(m.type==='error' && !settled){
+    account.status='error'; clearTimeout(timeout);
+    finish(false,new Error(m.data?.message||m.data?.error||'Login gagal'));
+   }else if(m.type==='session.replaced'){
+    account.status='error'; clearTimeout(timeout);
+    finish(false,new Error('Session digantikan oleh koneksi lain'));
+   }
+  });
+
+  ws.on('close',()=>{
+   clearTimeout(timeout);
+   if(account.ping)clearInterval(account.ping);
+   if(account.status!=='error' && account.status!=='closed')account.status='closed';
+   if(!settled)finish(false,new Error('WebSocket ditutup sebelum login selesai'));
+  });
+  ws.on('error',e=>{
+   account.status='error'; clearTimeout(timeout);
+   if(!settled)finish(false,e);
+  });
  });
- ws.on('close',()=>{if(account.ping)clearInterval(account.ping);if(account.status!=='closed')account.status='closed';if(!settled)done(false,new Error('WebSocket closed before session.ready'))});
- ws.on('error',e=>{account.status='error';if(!settled)done(false,e)});
- })}
-app.post('/api/accounts',async(req,res)=>{for(const a of sessions.values())closeSession(a); sessions.clear(); const accounts=Array.isArray(req.body.accounts)?req.body.accounts.slice(0,50):[]; const results=[]; for(const raw of accounts){if(!raw?.username)continue;const a={id:id(),username:String(raw.username),password:String(raw.password||''),status:'new',permissions:[]};sessions.set(a.id,a);try{await connectAccount(a);results.push({id:a.id,username:a.username,status:a.status,permissions:a.permissions})}catch(e){results.push({id:a.id,username:a.username,status:'error',error:safe(e.message)})}}res.json({ok:true,count:results.length,accounts:results})});
-app.post('/api/close',(_,res)=>{for(const a of sessions.values())closeSession(a);sessions.clear();res.json({ok:true})});
-app.get('/api/status',(_,res)=>res.json({ok:true,accounts:[...sessions.values()].map(a=>({id:a.id,username:a.username,status:a.status,permissions:a.permissions}))}));
-app.post('/api/room', (req,res)=>{const room=String(req.body.room||'').trim();const action=req.body.action;if(!room||!['join','leave'].includes(action))return res.status(400).json({ok:false,error:'room/action invalid'});let sent=0,failed=0;for(const a of sessions.values()){if(a.ws?.readyState!==WebSocket.OPEN){failed++;continue}try{a.ws.send(JSON.stringify({type:action==='join'?'room.join':'room.leave',room}));sent++}catch{failed++}}res.json({ok:failed===0,sent,failed})});
-app.post('/api/roll/step', (req,res)=>{const room=String(req.body.room||'').trim();const action=req.body.action;if(!room||!['join','leave'].includes(action))return res.status(400).json({ok:false,error:'room/action invalid'});const arr=[...sessions.values()].filter(a=>a.ws?.readyState===WebSocket.OPEN);res.json({ok:true,count:arr.length});});
-app.post('/api/roll/send',(req,res)=>{const sessionId=String(req.body.sessionId||'');const room=String(req.body.room||'').trim();const action=req.body.action;const a=sessions.get(sessionId);if(!a||!room||!['join','leave'].includes(action))return res.status(400).json({ok:false,error:'invalid'});if(a.ws?.readyState!==WebSocket.OPEN)return res.status(409).json({ok:false,error:'WebSocket tidak terhubung'});try{a.ws.send(JSON.stringify({type:action==='join'?'room.join':'room.leave',room}));res.json({ok:true,username:a.username,action})}catch(e){res.status(500).json({ok:false,error:safe(e.message)})}});
-app.listen(process.env.PORT||3000,()=>console.log('MigMaster Roll listening on '+(process.env.PORT||3000)));
+}
+
+async function sendToOpen(action,room){
+ let sent=0,failed=0;
+ for(const a of sessions.values()){
+  if(a.status!=='ready'||a.ws?.readyState!==WebSocket.OPEN){failed++;continue}
+  try{a.ws.send(JSON.stringify({type:action==='join'?'room.join':'room.leave',room}));sent++}
+  catch{failed++}
+ }
+ return {sent,failed};
+}
+
+app.post('/api/accounts',async(req,res)=>{
+ for(const a of sessions.values())closeSession(a);
+ sessions.clear();
+ const rawList=Array.isArray(req.body.accounts)?req.body.accounts:[];
+ const list=rawList.filter(a=>a&&String(a.username||'').trim());
+ const created=list.map(raw=>({
+  id:makeId(),username:String(raw.username).trim(),password:String(raw.password||''),
+  status:'new',permissions:[],balance:''
+ }));
+ created.forEach(a=>sessions.set(a.id,a));
+
+ // Semua akun login paralel: satu perintah HTTP mengendalikan seluruh koneksi.
+ // Tidak ada batas jumlah akun yang dibuat oleh aplikasi; batas praktis mengikuti
+ // RAM/CPU/network server dan limit layanan WebSocket.
+ const results=await Promise.all(created.map(async a=>{
+  try{await connectAccount(a)}
+  catch(e){a.status='error';a.error=safe(e.message)}
+  return {id:a.id,username:a.username,status:a.status,permissions:a.permissions,balance:a.balance||'',error:a.error||''};
+ }));
+ const ready=results.filter(a=>a.status==='ready').length;
+ res.json({ok:true,count:results.length,ready,accounts:results});
+});
+
+app.post('/api/close',(_,res)=>{
+ rollState.stop=true; rollState.running=false;
+ for(const a of sessions.values())closeSession(a);
+ sessions.clear();
+ res.json({ok:true});
+});
+
+app.get('/api/status',(_,res)=>res.json({
+ ok:true,
+ accounts:[...sessions.values()].map(a=>({
+  id:a.id,username:a.username,status:a.status,permissions:a.permissions,
+  balance:a.balance||'',error:a.error||''
+ }))
+}));
+
+app.post('/api/room',async(req,res)=>{
+ const room=String(req.body.room||'').trim();
+ const action=req.body.action;
+ if(!room||!['join','leave'].includes(action))
+  return res.status(400).json({ok:false,error:'room/action invalid'});
+ const result=await sendToOpen(action,room);
+ res.json({ok:result.failed===0,...result});
+});
+
+app.get('/api/roll/status',(_,res)=>res.json({
+ ok:true,running:rollState.running,room:rollState.room,delay:rollState.delay,message:rollState.message
+}));
+
+app.post('/api/roll/start',async(req,res)=>{
+ if(rollState.running)return res.status(409).json({ok:false,error:'ROLL sedang berjalan'});
+ const room=String(req.body.room||'').trim();
+ const delay=Math.max(0,Number(req.body.delay)||0);
+ if(!room)return res.status(400).json({ok:false,error:'room wajib diisi'});
+ const ids=[...sessions.values()].filter(a=>a.status==='ready'&&a.ws?.readyState===WebSocket.OPEN);
+ if(!ids.length)return res.status(409).json({ok:false,error:'Belum ada WebSocket yang siap/login'});
+
+ rollState.running=true;rollState.stop=false;rollState.room=room;rollState.delay=delay;
+ rollState.message=`ROLL berjalan: ${ids.length} WebSocket`;
+
+ // Jalankan di background. Browser hanya mengirim START/STOP satu kali.
+ (async()=>{
+  let i=0;
+  try{
+   while(rollState.running&&!rollState.stop){
+    const a=ids[i%ids.length];
+    if(a.ws?.readyState!==WebSocket.OPEN){
+     rollState.message=`WebSocket ${i+1}/${ids.length} tidak terhubung`;
+    }else{
+     rollState.message=`WebSocket ${i+1}/${ids.length}: ENTER`;
+     a.ws.send(JSON.stringify({type:'room.join',room}));
+     await wait(delay);
+     if(rollState.stop)break;
+     if(a.ws?.readyState===WebSocket.OPEN){
+      rollState.message=`WebSocket ${i+1}/${ids.length}: LEAVE`;
+      a.ws.send(JSON.stringify({type:'room.leave',room}));
+     }
+     await wait(delay);
+    }
+    i++;
+   }
+  }catch(e){rollState.message='ROLL berhenti karena error: '+safe(e.message)}
+  finally{rollState.running=false;rollState.stop=false;if(!rollState.message.startsWith('ROLL berhenti'))rollState.message='ROLL dihentikan.'}
+ })();
+
+ res.json({ok:true,message:'ROLL dimulai.'});
+});
+
+app.post('/api/roll/stop',(_,res)=>{
+ rollState.stop=true;
+ rollState.running=false;
+ rollState.message='ROLL dihentikan.';
+ res.json({ok:true,message:rollState.message});
+});
+
+const port=Number(process.env.PORT)||3000;
+server.listen(port,()=>console.log('MigMaster Roll listening on '+port));

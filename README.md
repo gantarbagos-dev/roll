@@ -1,14 +1,19 @@
-# MigMaster Roll
+# MigMaster Roll - FIXED
 
-Project baru berbasis official MigReborn Developer WebSocket API.
+Perbaikan utama:
+- Login semua akun dijalankan paralel, bukan satu per satu.
+- Tetap memakai 1 WebSocket terpisah untuk setiap akun, sesuai dokumentasi Multi ID MigReborn.
+- Browser hanya mengirim satu perintah START/STOP untuk ROLL; urutan ENTER/LEAVE dikerjakan server.
+- Menghilangkan `/api/roll/send` per langkah yang membuat browser mudah mengalami `Failed to fetch`.
+- SAVE memiliki nama file, default `troop1`, dan otomatis menambahkan `.json`.
+- LOAD memulihkan akun, room, dan delay.
+- Status WebSocket dan saldo ditampilkan.
+- LOGOUT menutup seluruh koneksi.
+- API command yang dipakai mengikuti dokumentasi `https://mig33.id/api.html`.
 
-- Satu WebSocket per User ID yang diload.
-- Save/Load User ID + password memakai localStorage browser.
-- Login membuat array WebSocket sesuai jumlah User ID.
-- Enter Room dan Leave Room.
-- CommandBox `ROLL`: WebSocket 1 ENTER -> LEAVE, lanjut WebSocket 2, dst, kemudian kembali ke WebSocket 1 tanpa batas sampai STOP ROLL.
-- Delay dapat diatur dalam milidetik.
-- WebSocket mengirim ping setiap 40 detik setelah `session.ready`.
+Jalankan:
+`npm install`
+`npm start`
 
-API: https://mig33.id/api.html
-Endpoint: wss://developer.mig33.id/developer/ws
+Endpoint WebSocket:
+`wss://developer.mig33.id/developer/ws`
