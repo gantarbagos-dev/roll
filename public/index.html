@@ -77,7 +77,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
    <button id="login" class="blue">LOGIN</button>
    <button id="logout" class="danger">LOGOUT</button>
  </div>
- <div class="small" style="margin-top:8px">Jumlah User ID tidak dibatasi oleh aplikasi. SAVE menyimpan semua akun + room + delay.</div>
+ <div class="small" style="margin-top:8px">Jumlah User ID tidak dibatasi oleh aplikasi. SAVE menyimpan semua akun + room + delay LOGIN → ENTER.</div>
  <div id="status" class="status"></div>
 </section>
 
@@ -85,7 +85,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
  <h2>Room</h2>
  <div class="grid">
   <input id="room" placeholder="Nama room">
-  <input id="delay" type="number" min="0" value="1000" placeholder="Delay ms">
+  <input id="delay" type="number" min="0" value="1000" placeholder="Delay LOGIN → ENTER (ms)">
  </div>
  <div class="actions" style="margin-top:8px">
   <button id="enter" class="blue">ENTER ROOM</button>
@@ -96,7 +96,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <section class="card">
  <h2>CommandBox</h2>
  <button id="roll" class="roll blue">ROLL</button>
- <div class="small" style="margin-top:8px">ROLL dijalankan di server: WebSocket 1 ENTER → LEAVE → WebSocket 2 → LEAVE → berulang. Tombol STOP menghentikan satu proses ROLL tanpa request berulang dari browser.</div>
+ <div class="small" style="margin-top:8px">ROLL dijalankan berurutan: WebSocket 1 LOGIN → ENTER → LEAVE → LOGOUT, lalu WebSocket 2 sampai terakhir, kemudian kembali ke WebSocket 1. Tombol STOP menghentikan ROLL.</div>
  <div id="rollstate" class="status"></div>
 </section>
 
