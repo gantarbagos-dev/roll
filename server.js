@@ -153,38 +153,86 @@ app.post('/api/roll/start',async(req,res)=>{
  const room=String(req.body.room||'').trim();
  const delay=Math.max(0,Number(req.body.delay)||0);
  if(!room)return res.status(400).json({ok:false,error:'room wajib diisi'});
- const ids=[...sessions.values()].filter(a=>a.status==='ready'&&a.ws?.readyState===WebSocket.OPEN);
- if(!ids.length)return res.status(409).json({ok:false,error:'Belum ada WebSocket yang siap/login'});
+
+ // ROLL memakai akun yang sudah dimuat/login. Setiap WebSocket diproses
+ // sepenuhnya satu per satu:
+ // LOGIN -> ENTER ROOM -> LEAVE ROOM -> LOGOUT, lalu lanjut ke WebSocket berikutnya.
+ // Setelah WebSocket terakhir selesai, kembali lagi ke WebSocket pertama.
+ const ids=[...sessions.values()].filter(a=>a.username&&a.password);
+ if(!ids.length)return res.status(409).json({ok:false,error:'Belum ada akun yang siap diproses'});
 
  rollState.running=true;rollState.stop=false;rollState.room=room;rollState.delay=delay;
- rollState.message=`ROLL berjalan: ${ids.length} WebSocket`;
+ rollState.message=`ROLL berjalan: ${ids.length} WebSocket, urutan 1→${ids.length}→1`;
 
- // Jalankan di background. Browser hanya mengirim START/STOP satu kali.
  (async()=>{
   let i=0;
   try{
    while(rollState.running&&!rollState.stop){
     const a=ids[i%ids.length];
-    if(a.ws?.readyState!==WebSocket.OPEN){
-     rollState.message=`WebSocket ${i+1}/${ids.length} tidak terhubung`;
-    }else{
-     rollState.message=`WebSocket ${i+1}/${ids.length}: ENTER`;
-     a.ws.send(JSON.stringify({type:'room.join',room}));
-     await wait(delay);
-     if(rollState.stop)break;
-     if(a.ws?.readyState===WebSocket.OPEN){
-      rollState.message=`WebSocket ${i+1}/${ids.length}: LEAVE`;
-      a.ws.send(JSON.stringify({type:'room.leave',room}));
-     }
-     await wait(delay);
+
+    // Pastikan koneksi lama benar-benar logout sebelum login untuk putaran ini.
+    if(a.ws || a.status==='ready' || a.status==='closed'){
+     closeSession(a);
+     a.ws=null;
+     a.status='new';
     }
+
+    rollState.message=`WebSocket ${(i%ids.length)+1}/${ids.length}: LOGIN`;
+    try{
+     await connectAccount(a);
+    }catch(e){
+     a.status='error';
+     a.error=safe(e.message);
+     rollState.message=`WebSocket ${(i%ids.length)+1}/${ids.length}: LOGIN gagal`;
+     i++;
+     continue;
+    }
+
+    if(rollState.stop)break;
+
+    // Delay hanya berlaku dari LOGIN selesai menuju ENTER ROOM.
+    await wait(delay);
+    if(rollState.stop)break;
+
+    rollState.message=`WebSocket ${(i%ids.length)+1}/${ids.length}: ENTER ROOM`;
+    if(a.ws?.readyState===WebSocket.OPEN){
+     a.ws.send(JSON.stringify({type:'room.join',room}));
+    }
+    if(rollState.stop)break;
+
+    // ENTER -> LEAVE berjalan langsung tanpa delay tambahan.
+    rollState.message=`WebSocket ${(i%ids.length)+1}/${ids.length}: LEAVE ROOM`;
+    if(a.ws?.readyState===WebSocket.OPEN){
+     a.ws.send(JSON.stringify({type:'room.leave',room}));
+    }
+    if(rollState.stop)break;
+
+    // LEAVE -> LOGOUT juga langsung, tanpa memakai setting Delay.
+    rollState.message=`WebSocket ${(i%ids.length)+1}/${ids.length}: LOGOUT`;
+    closeSession(a);
+    a.ws=null;
+    a.status='closed';
+
     i++;
    }
-  }catch(e){rollState.message='ROLL berhenti karena error: '+safe(e.message)}
-  finally{rollState.running=false;rollState.stop=false;if(!rollState.message.startsWith('ROLL berhenti'))rollState.message='ROLL dihentikan.'}
+  }catch(e){
+   rollState.message='ROLL berhenti karena error: '+safe(e.message);
+  }finally{
+   // Jika STOP ditekan di tengah proses, tutup koneksi aktif agar tidak ada
+   // WebSocket yang tertinggal dalam keadaan login.
+   for(const a of ids){
+    if(a.ws && (a.status==='ready'||a.status==='connecting'||a.status==='authenticating')){
+     closeSession(a);
+     a.ws=null;
+    }
+   }
+   rollState.running=false;
+   rollState.stop=false;
+   if(!rollState.message.startsWith('ROLL berhenti'))rollState.message='ROLL dihentikan.';
+  }
  })();
 
- res.json({ok:true,message:'ROLL dimulai.'});
+ res.json({ok:true,message:'ROLL dimulai: LOGIN → ENTER → LEAVE → LOGOUT per WebSocket.'});
 });
 
 app.post('/api/roll/stop',(_,res)=>{

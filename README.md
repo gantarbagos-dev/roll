@@ -1,22 +1,14 @@
-# MigMaster Roll — Batch Login
+# MigMaster Roll — Sequential WebSocket Roll
 
-Versi ini memproses jumlah User ID sesuai daftar yang dikirim tanpa batas angka buatan seperti 10/20/50.
+ROLL memproses WebSocket satu per satu secara berurutan:
 
-## Login
+**WebSocket 1:** LOGIN → ENTER ROOM → LEAVE ROOM → LOGOUT  
+**WebSocket 2:** LOGIN → ENTER ROOM → LEAVE ROOM → LOGOUT  
+… sampai WebSocket terakhir, lalu kembali ke WebSocket 1 dan mengulang selama ROLL aktif.
 
-Semua akun tetap dikelola dengan **1 WebSocket per akun**, tetapi pembukaan koneksi dilakukan bertahap:
+Semua koneksi tetap memakai 1 WebSocket per akun. Tidak ada login 10 WebSocket sekaligus saat ROLL berjalan.
 
-- default 5 akun per batch
-- jeda 500 ms antar-batch
-- setelah berhasil login, seluruh WebSocket tetap aktif
-- satu tombol LOGIN tetap mengendalikan seluruh daftar
-
-Environment variable opsional:
-
-- `LOGIN_BATCH_SIZE` — jumlah koneksi yang dibuka per batch (default 5, maksimum 5 pada versi aman ini)
-- `LOGIN_BATCH_GAP_MS` — jeda antar-batch dalam milidetik (default 500)
-
-Jika server/API memiliki batas koneksi aktif per IP/akun, batas tersebut tetap berlaku dan tidak dapat dihilangkan dari frontend.
+`delay` di frontend mengatur jeda antar langkah ROLL.
 
 ## Start
 
