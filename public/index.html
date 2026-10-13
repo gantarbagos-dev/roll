@@ -77,7 +77,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
    <button id="login" class="blue">LOGIN</button>
    <button id="logout" class="danger">LOGOUT</button>
  </div>
- <div class="small" style="margin-top:8px">Jumlah User ID tidak dibatasi oleh aplikasi. SAVE menyimpan semua akun + room + delay LOGIN → ENTER.</div>
+ <div class="small" style="margin-top:8px">Maksimal 50 User ID/WebSocket. SAVE menyimpan akun + room + delay ROLL + teks FLOOD.</div>
  <div id="status" class="status"></div>
 </section>
 
@@ -85,7 +85,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
  <h2>Room</h2>
  <div class="grid">
   <input id="room" placeholder="Nama room">
-  <input id="delay" type="number" min="0" value="1000" placeholder="Delay LOGIN → ENTER (ms)">
+  <input id="delay" type="number" min="0" value="1000" placeholder="Delay antar-WebSocket (ms)">
  </div>
  <div class="actions" style="margin-top:8px">
   <button id="enter" class="blue">ENTER ROOM</button>
@@ -96,8 +96,20 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <section class="card">
  <h2>CommandBox</h2>
  <button id="roll" class="roll blue">ROLL</button>
- <div class="small" style="margin-top:8px">ROLL dijalankan berurutan: WebSocket 1 LOGIN → ENTER → LEAVE → LOGOUT, lalu WebSocket 2 sampai terakhir, kemudian kembali ke WebSocket 1. Tombol STOP menghentikan ROLL.</div>
+ <div class="small" style="margin-top:8px">ROLL menggunakan maksimal 50 WebSocket yang sudah login: ENTER → LEAVE, lalu jeda antar-WebSocket. Tidak ada LOGIN/LOGOUT di dalam ROLL.</div>
  <div id="rollstate" class="status"></div>
+</section>
+
+<section class="card">
+ <h2>FLOOD</h2>
+ <div class="grid">
+  <input id="flood1" maxlength="300" placeholder="Flood 1 — teks pesan">
+  <input id="flood2" maxlength="300" placeholder="Flood 2 — teks pesan">
+  <input id="flood3" maxlength="300" placeholder="Flood 3 — teks pesan">
+ </div>
+ <button id="flood" class="roll blue" style="margin-top:8px">FLOOD</button>
+ <div class="small" style="margin-top:8px">Semua WebSocket yang memenuhi izin akan masuk room terlebih dahulu. Setiap WebSocket mengirim Flood 1 → Flood 2 → Flood 3 bergantian, maksimal 8 sendtext/detik per WebSocket. STOP FLOOD menghentikan pengiriman baru; pesan yang sudah diterima server sebagai antrean mungkin tetap diproses.</div>
+ <div id="floodstate" class="status"></div>
 </section>
 
 <section class="card">
@@ -110,6 +122,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 const $=id=>document.getElementById(id);
 let accounts=[];
 let rollRunning=false;
+let floodRunning=false;
 
 function setLoginState(state,text){
  $('loginDot').className='dot '+state;
@@ -146,7 +159,7 @@ async function api(url,body){
 }
 function saveFile(){
  const name=($('fileName').value.trim()||'troop1').replace(/[\\/:*?"<>|]/g,'_');
- const data={version:2,exportedAt:new Date().toISOString(),accounts,room:$('room').value.trim(),delay:Number($('delay').value)||0};
+ const data={version:3,exportedAt:new Date().toISOString(),accounts,room:$('room').value.trim(),delay:Number($('delay').value)||0,flood1:$('flood1').value,flood2:$('flood2').value,flood3:$('flood3').value};
  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
  const url=URL.createObjectURL(blob);
  const a=document.createElement('a'); a.href=url; a.download=name.toLowerCase().endsWith('.json')?name:name+'.json';
@@ -162,10 +175,12 @@ function loadFile(file){
    const data=JSON.parse(reader.result);
    const list=Array.isArray(data)?data:data.accounts;
    if(!Array.isArray(list)) throw new Error('Format file tidak valid');
+   if(list.length>50) throw new Error('Maksimal 50 User ID/WebSocket per file');
    accounts=list.map(a=>({username:String(a?.username||''),password:String(a?.password||'')}));
    if(data && !Array.isArray(data)){
     $('room').value=String(data.room||'');
     $('delay').value=Number.isFinite(Number(data.delay))?Number(data.delay):1000;
+    $('flood1').value=String(data.flood1||'');$('flood2').value=String(data.flood2||'');$('flood3').value=String(data.flood3||'');
    }
    renderInputs();
    $('status').textContent=`File berhasil diload: ${accounts.length} User ID.`;
@@ -176,6 +191,7 @@ function loadFile(file){
  reader.readAsText(file);
 }
 $('add').onclick=()=>{
+ if(accounts.length>=50){$('status').textContent='Maksimal 50 User ID/WebSocket.';return}
  accounts.push({username:'',password:''}); renderInputs();
 };
 $('save').onclick=saveFile;
@@ -184,6 +200,7 @@ $('fileInput').onchange=e=>loadFile(e.target.files[0]);
 
 $('login').onclick=async()=>{
  const valid=accounts.filter(a=>a.username.trim());
+ if(valid.length>50){$('status').textContent='Maksimal 50 WebSocket.';return}
  if(!valid.length){$('status').textContent='Tambahkan minimal satu User ID.';return}
  $('login').disabled=true; setLoginState('busy','Auth...');
  $('status').textContent=`Login ${valid.length} WebSocket secara bersamaan...`;
@@ -244,6 +261,31 @@ $('roll').onclick=async()=>{
   refreshRoll();
  }catch(e){$('rollstate').textContent='ROLL gagal: '+e.message}
 };
+async function refreshFlood(){
+ try{
+  const j=await fetch('/api/flood/status',{cache:'no-store'}).then(r=>r.json());
+  floodRunning=!!j.running;
+  $('flood').textContent=floodRunning?'STOP FLOOD':'FLOOD';
+  $('floodstate').textContent=j.message||'';
+  if(j.running)setTimeout(refreshFlood,700);
+ }catch{}
+}
+$('flood').onclick=async()=>{
+ if(floodRunning){
+  try{await api('/api/flood/stop')}catch(e){}
+  await refreshFlood();return;
+ }
+ const room=$('room').value.trim();
+ if(!room){$('floodstate').textContent='Isi nama room terlebih dahulu.';return}
+ const flood1=$('flood1').value.trim(),flood2=$('flood2').value.trim(),flood3=$('flood3').value.trim();
+ if(!flood1&&!flood2&&!flood3){$('floodstate').textContent='Isi minimal satu textbox Flood.';return}
+ try{
+  const j=await api('/api/flood/start',{room,flood1,flood2,flood3});
+  floodRunning=true;$('flood').textContent='STOP FLOOD';$('floodstate').textContent=j.message||'FLOOD berjalan.';
+  refreshFlood();
+ }catch(e){$('floodstate').textContent='FLOOD gagal: '+e.message}
+};
+
 setInterval(async()=>{
  try{
   const j=await fetch('/api/status',{cache:'no-store'}).then(r=>r.json());
@@ -252,7 +294,7 @@ setInterval(async()=>{
 },2000);
 
 accounts=[{username:'',password:''}];
-renderInputs(); renderStatus([]); setLoginState('offline','Offline'); refreshRoll();
+renderInputs(); renderStatus([]); setLoginState('offline','Offline'); refreshRoll(); refreshFlood();
 </script>
 </body>
 </html>
