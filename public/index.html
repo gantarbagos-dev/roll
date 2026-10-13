@@ -116,8 +116,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
  </div>
  <label for="delayFlood" class="small">Delay Flood antar-WebSocket (ms)</label>
  <input id="delayFlood" type="number" min="0" max="60000" step="50" value="250" placeholder="Jeda antar-WebSocket (ms)">
- <button id="flood" class="roll blue" style="margin-top:8px">KIRIM ROLLING</button>
- <div class="small" style="margin-top:8px">Textbox dapat diubah ukurannya. Setiap WS mengirim Flood 1–8 berurutan, lalu menunggu Delay Flood sebelum WS berikutnya. Setelah WS terakhir, putaran berikutnya kembali ke WS pertama. Rolling berulang sampai tombol Stop ditekan; batas internal maksimal 8 pesan/detik/WS. STOP menghentikan pesan baru dan meminta semua WS yang berhasil join untuk leave room.</div>
+ <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
+  <button id="saveFlood" class="blue" type="button">SAVE FLOOD</button>
+  <button id="loadFlood" type="button">LOAD FLOOD</button>
+ </div>
+ <input id="floodFileInput" type="file" accept=".json,application/json" hidden>
+ <button id="flood" class="roll blue" style="margin-top:8px">FLOOD</button>
+ <div class="small" style="margin-top:8px">Semua WS mengirim Flood 1 secara bersamaan, lalu menunggu Delay Flood sebelum semua WS mengirim Flood 2, dan seterusnya sampai Flood 8. Satu kali urutan per penekanan; maksimal 8 pesan/detik/WS. STOP menghentikan pengiriman berikutnya. SAVE FLOOD/LOAD FLOOD menyimpan atau memuat textbox Flood 1–8.</div>
  <div id="floodstate" class="status"></div>
 </section>
 
@@ -206,6 +211,34 @@ $('add').onclick=()=>{
 $('save').onclick=saveFile;
 $('load').onclick=()=>$('fileInput').click();
 $('fileInput').onchange=e=>loadFile(e.target.files[0]);
+function saveFloodFile(){
+ const data={version:1,exportedAt:new Date().toISOString(),delayFlood:Number($('delayFlood').value)||0,...Object.fromEntries(Array.from({length:8},(_,i)=>['flood'+(i+1),$('flood'+(i+1)).value]))};
+ const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+ const url=URL.createObjectURL(blob);
+ const a=document.createElement('a'); a.href=url; a.download='flood-set.json';
+ document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+ $('floodstate').textContent='Set Flood 1–8 dan Delay Flood berhasil disimpan ke flood-set.json.';
+}
+function loadFloodFile(file){
+ if(!file)return;
+ const reader=new FileReader();
+ reader.onload=()=>{
+  try{
+   const data=JSON.parse(reader.result);
+   if(!data||typeof data!=='object'||Array.isArray(data))throw new Error('Format tidak valid');
+   if(!Array.from({length:8},(_,i)=>data['flood'+(i+1)]).some(v=>typeof v==='string'))throw new Error('Field Flood tidak ditemukan');
+   for(let i=1;i<=8;i++)$('flood'+i).value=typeof data['flood'+i]==='string'?data['flood'+i]:'';
+   if(data.delayFlood!==undefined&&Number.isFinite(Number(data.delayFlood)))$('delayFlood').value=Math.max(0,Math.min(60000,Number(data.delayFlood)));
+   $('floodstate').textContent='Set Flood berhasil dimuat.';
+  }catch(e){$('floodstate').textContent='Gagal memuat: file JSON bukan set Flood yang valid.';}
+  finally{$('floodFileInput').value='';}
+ };
+ reader.onerror=()=>{$('floodstate').textContent='File Flood gagal dibaca.'};
+ reader.readAsText(file);
+}
+$('saveFlood').onclick=saveFloodFile;
+$('loadFlood').onclick=()=>$('floodFileInput').click();
+$('floodFileInput').onchange=e=>loadFloodFile(e.target.files[0]);
 
 $('login').onclick=async()=>{
  const valid=accounts.filter(a=>a.username.trim());
@@ -274,7 +307,7 @@ async function refreshFlood(){
  try{
   const j=await fetch('/api/flood/status',{cache:'no-store'}).then(r=>r.json());
   floodRunning=!!j.running;
-  $('flood').textContent=floodRunning?'STOP FLOOD':'KIRIM ROLLING';
+  $('flood').textContent=floodRunning?'STOP FLOOD':'FLOOD';
   $('floodstate').textContent=j.message||'';
   if(j.running)setTimeout(refreshFlood,700);
  }catch{}
@@ -287,12 +320,12 @@ $('flood').onclick=async()=>{
  const room=$('room').value.trim();
  if(!room){$('floodstate').textContent='Isi nama room terlebih dahulu.';return}
  const messages=Array.from({length:8},(_,i)=>$('flood'+(i+1)).value.trim());
- if(!messages.some(Boolean)){$('floodstate').textContent='Isi minimal satu textbox Flood.';return}
+ if(messages.some(v=>!v)){$('floodstate').textContent='Isi semua textbox Flood 1 sampai Flood 8.';return}
  try{
   const payload={room,delayFlood:Math.max(0,Math.min(60000,Number($('delayFlood').value)||0))};
   messages.forEach((v,i)=>payload['flood'+(i+1)]=v);
   const j=await api('/api/flood/start',payload);
-  floodRunning=true;$('flood').textContent='STOP FLOOD';$('floodstate').textContent=j.message||'FLOOD rolling berjalan.';
+  floodRunning=true;$('flood').textContent='STOP FLOOD';$('floodstate').textContent=j.message||'FLOOD berjalan.';
   refreshFlood();
  }catch(e){$('floodstate').textContent='FLOOD gagal: '+e.message}
 };
