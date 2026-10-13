@@ -8,6 +8,7 @@ const server=http.createServer(app);
 const WSS_URL='wss://developer.mig33.id/developer/ws';
 const sessions=new Map();
 const rollState={running:false,stop:false,room:'',delay:0,message:''};
+const floodState={running:false,stop:false,room:'',messages:[],sent:0,failed:0,message:'FLOOD belum berjalan.'};
 
 app.use(express.json({limit:'10mb'}));
 app.use(express.static(path.join(__dirname,'public')));
@@ -20,6 +21,25 @@ function closeSession(s){
  s.status='closed';
 }
 function wait(ms){return new Promise(r=>setTimeout(r,Math.max(0,ms)))}
+function sendAndWait(account,payload,expectedType,timeoutMs=5000){
+ return new Promise((resolve,reject)=>{
+  const ws=account.ws;
+  if(account.status!=='ready'||!ws||ws.readyState!==WebSocket.OPEN)return reject(new Error('WebSocket tidak siap'));
+  let done=false;
+  const finish=(err,value)=>{
+   if(done)return;done=true;clearTimeout(timer);ws.off('message',onMessage);
+   err?reject(err):resolve(value);
+  };
+  const onMessage=raw=>{
+   let m;try{m=JSON.parse(raw.toString())}catch{return}
+   if(m.type===expectedType)finish(null,m);
+   else if(m.type==='error')finish(new Error(m.data?.message||m.data?.error||'API error'));
+  };
+  const timer=setTimeout(()=>finish(new Error('Timeout menunggu '+expectedType)),timeoutMs);
+  ws.on('message',onMessage);
+  try{ws.send(JSON.stringify(payload))}catch(e){finish(e)}
+ });
+}
 
 function connectAccount(account){
  return new Promise((resolve,reject)=>{
@@ -93,6 +113,7 @@ app.post('/api/accounts',async(req,res)=>{
  sessions.clear();
  const rawList=Array.isArray(req.body.accounts)?req.body.accounts:[];
  const list=rawList.filter(a=>a&&String(a.username||'').trim());
+ if(list.length>50)return res.status(400).json({ok:false,error:'Maksimal 50 WebSocket dalam array'});
  const created=list.map(raw=>({
   id:makeId(),username:String(raw.username).trim(),password:String(raw.password||''),
   status:'new',permissions:[],balance:''
@@ -122,6 +143,7 @@ app.post('/api/accounts',async(req,res)=>{
 
 app.post('/api/close',(_,res)=>{
  rollState.stop=true; rollState.running=false;
+ floodState.stop=true; floodState.running=false;
  for(const a of sessions.values())closeSession(a);
  sessions.clear();
  res.json({ok:true});
@@ -150,89 +172,58 @@ app.get('/api/roll/status',(_,res)=>res.json({
 
 app.post('/api/roll/start',async(req,res)=>{
  if(rollState.running)return res.status(409).json({ok:false,error:'ROLL sedang berjalan'});
+ if(floodState.running)return res.status(409).json({ok:false,error:'Hentikan FLOOD sebelum menjalankan ROLL'});
  const room=String(req.body.room||'').trim();
  const delay=Math.max(0,Number(req.body.delay)||0);
  if(!room)return res.status(400).json({ok:false,error:'room wajib diisi'});
 
- // ROLL memakai akun yang sudah dimuat/login. Setiap WebSocket diproses
- // sepenuhnya satu per satu:
- // LOGIN -> ENTER ROOM -> LEAVE ROOM -> LOGOUT, lalu lanjut ke WebSocket berikutnya.
- // Setelah WebSocket terakhir selesai, kembali lagi ke WebSocket pertama.
- const ids=[...sessions.values()].filter(a=>a.username&&a.password);
- if(!ids.length)return res.status(409).json({ok:false,error:'Belum ada akun yang siap diproses'});
+ // ROLL hanya menggunakan WebSocket yang sudah login dan masih terbuka.
+ // Tidak melakukan LOGIN ulang, LOGOUT, atau menutup koneksi pada akhir putaran.
+ const ids=[...sessions.values()].filter(a=>a.status==='ready'&&a.ws?.readyState===WebSocket.OPEN);
+ if(!ids.length)return res.status(409).json({ok:false,error:'Tidak ada WebSocket yang sudah login dan siap digunakan'});
+ if(ids.length>50)return res.status(409).json({ok:false,error:'ROLL dibatasi maksimal 50 WebSocket'});
 
  rollState.running=true;rollState.stop=false;rollState.room=room;rollState.delay=delay;
- rollState.message=`ROLL berjalan: ${ids.length} WebSocket, urutan 1→${ids.length}→1`;
+ rollState.message=`ROLL berjalan: ${ids.length} WebSocket siap; tanpa LOGIN/LOGOUT`;
 
  (async()=>{
   let i=0;
   try{
    while(rollState.running&&!rollState.stop){
-    const a=ids[i%ids.length];
-
-    // Pastikan koneksi lama benar-benar logout sebelum login untuk putaran ini.
-    if(a.ws || a.status==='ready' || a.status==='closed'){
-     closeSession(a);
-     a.ws=null;
-     a.status='new';
-    }
-
-    rollState.message=`WebSocket ${(i%ids.length)+1}/${ids.length}: LOGIN`;
-    try{
-     await connectAccount(a);
-    }catch(e){
-     a.status='error';
-     a.error=safe(e.message);
-     rollState.message=`WebSocket ${(i%ids.length)+1}/${ids.length}: LOGIN gagal`;
+    const index=i%ids.length;
+    const a=ids[index];
+    if(a.status!=='ready'||a.ws?.readyState!==WebSocket.OPEN){
+     rollState.message=`WebSocket ${index+1}/${ids.length} tidak siap; dilewati`;
      i++;
+     await wait(100);
      continue;
     }
+    rollState.message=`WebSocket ${index+1}/${ids.length}: ENTER ROOM`;
+    a.ws.send(JSON.stringify({type:'room.join',room}));
+    if(rollState.stop||!rollState.running)break;
 
-    if(rollState.stop)break;
-
-    // Delay hanya berlaku dari LOGIN selesai menuju ENTER ROOM.
-    await wait(delay);
-    if(rollState.stop)break;
-
-    rollState.message=`WebSocket ${(i%ids.length)+1}/${ids.length}: ENTER ROOM`;
-    if(a.ws?.readyState===WebSocket.OPEN){
-     a.ws.send(JSON.stringify({type:'room.join',room}));
-    }
-    if(rollState.stop)break;
-
-    // ENTER -> LEAVE berjalan langsung tanpa delay tambahan.
-    rollState.message=`WebSocket ${(i%ids.length)+1}/${ids.length}: LEAVE ROOM`;
+    rollState.message=`WebSocket ${index+1}/${ids.length}: LEAVE ROOM`;
     if(a.ws?.readyState===WebSocket.OPEN){
      a.ws.send(JSON.stringify({type:'room.leave',room}));
     }
-    if(rollState.stop)break;
-
-    // LEAVE -> LOGOUT juga langsung, tanpa memakai setting Delay.
-    rollState.message=`WebSocket ${(i%ids.length)+1}/${ids.length}: LOGOUT`;
-    closeSession(a);
-    a.ws=null;
-    a.status='closed';
-
     i++;
+    // Delay adalah jeda antar-WebSocket, bukan jeda sebelum ENTER ROOM.
+    if(rollState.running&&!rollState.stop&&delay>0){
+     rollState.message=`WebSocket berikutnya dalam ${delay} ms`;
+     await wait(delay);
+    }
    }
   }catch(e){
    rollState.message='ROLL berhenti karena error: '+safe(e.message);
   }finally{
-   // Jika STOP ditekan di tengah proses, tutup koneksi aktif agar tidak ada
-   // WebSocket yang tertinggal dalam keadaan login.
-   for(const a of ids){
-    if(a.ws && (a.status==='ready'||a.status==='connecting'||a.status==='authenticating')){
-     closeSession(a);
-     a.ws=null;
-    }
-   }
+   // Jangan logout atau menutup WebSocket: koneksi tetap login untuk penggunaan berikutnya.
    rollState.running=false;
    rollState.stop=false;
-   if(!rollState.message.startsWith('ROLL berhenti'))rollState.message='ROLL dihentikan.';
+   if(!rollState.message.startsWith('ROLL berhenti'))rollState.message='ROLL dihentikan; WebSocket tetap login.';
   }
  })();
 
- res.json({ok:true,message:'ROLL dimulai: LOGIN → ENTER → LEAVE → LOGOUT per WebSocket.'});
+ res.json({ok:true,message:`ROLL dimulai: ENTER → LEAVE berulang pada ${ids.length} WebSocket yang sudah login; tanpa LOGIN/LOGOUT.`});
 });
 
 app.post('/api/roll/stop',(_,res)=>{
@@ -240,6 +231,58 @@ app.post('/api/roll/stop',(_,res)=>{
  rollState.running=false;
  rollState.message='ROLL dihentikan.';
  res.json({ok:true,message:rollState.message});
+});
+
+
+app.get('/api/flood/status',(_,res)=>res.json({ok:true,running:floodState.running,room:floodState.room,sent:floodState.sent,failed:floodState.failed,message:floodState.message}));
+
+app.post('/api/flood/start',async(req,res)=>{
+ if(floodState.running)return res.status(409).json({ok:false,error:'FLOOD sedang berjalan'});
+ if(rollState.running)return res.status(409).json({ok:false,error:'Hentikan ROLL sebelum menjalankan FLOOD'});
+ const room=String(req.body.room||'').trim();
+ const messages=[req.body.flood1,req.body.flood2,req.body.flood3].map(v=>String(v||'').trim().slice(0,300)).filter(Boolean);
+ if(!room)return res.status(400).json({ok:false,error:'Nama room wajib diisi'});
+ if(!messages.length)return res.status(400).json({ok:false,error:'Isi minimal satu textbox Flood'});
+ const ready=[...sessions.values()].filter(a=>a.status==='ready'&&a.ws?.readyState===WebSocket.OPEN);
+ if(!ready.length)return res.status(409).json({ok:false,error:'Tidak ada WebSocket yang sudah login dan siap'});
+ if(ready.length>50)return res.status(409).json({ok:false,error:'FLOOD dibatasi maksimal 50 WebSocket'});
+ const permitted=ready.filter(a=>Array.isArray(a.permissions)&&a.permissions.includes('messaging.send')&&a.permissions.includes('rooms.join'));
+ if(!permitted.length)return res.status(403).json({ok:false,error:'Tidak ada WebSocket dengan izin rooms.join dan messaging.send'});
+ floodState.running=true;floodState.stop=false;floodState.room=room;floodState.messages=messages;floodState.sent=0;floodState.failed=0;
+ floodState.message=`Memasukkan ${permitted.length} WebSocket ke room sebelum mengirim pesan.`;
+ res.json({ok:true,message:`FLOOD dimulai; ${permitted.length} WebSocket akan join room. Setiap akun mengirim maksimal 1 pesan/detik.`});
+ (async()=>{
+  try{
+   // Join all eligible sockets first and wait for direct join results before sending messages.
+   const joined=await Promise.all(permitted.map(async a=>{
+    try{await sendAndWait(a,{type:'room.join',room},'room.join.result',5000);return a}
+    catch(e){floodState.failed++;return null}
+   }));
+   const active=joined.filter(Boolean);
+   if(floodState.stop||!floodState.running)return;
+   if(!active.length){floodState.message='FLOOD berhenti: tidak ada WebSocket berhasil masuk room.';return}
+   floodState.message=`${active.length} WebSocket masuk room; pengiriman bergantian aktif.`;
+   // Independent worker per WebSocket. 125 ms between sends limits each WebSocket to at most 8 sendtext operations per second.
+   await Promise.all(active.map(async a=>{
+    let idx=0;
+    while(floodState.running&&!floodState.stop&&a.status==='ready'&&a.ws?.readyState===WebSocket.OPEN){
+     const message=floodState.messages[idx%floodState.messages.length];
+     try{
+      a.ws.send(JSON.stringify({type:'room.send_message',room:floodState.room,message}));
+      floodState.sent++;idx++;
+      floodState.message=`FLOOD aktif · terkirim ${floodState.sent} · gagal ${floodState.failed}`;
+     }catch{floodState.failed++;break}
+     await wait(125);
+    }
+   }));
+  }catch(e){floodState.message='FLOOD error: '+safe(e.message)}
+  finally{floodState.running=false;floodState.stop=false;if(!floodState.message.startsWith('FLOOD berhenti:'))floodState.message=`STOP FLOOD: pengiriman baru dihentikan. Terkirim ${floodState.sent}, gagal ${floodState.failed}.`;}
+ })();
+});
+
+app.post('/api/flood/stop',(_,res)=>{
+ floodState.stop=true;floodState.running=false;floodState.message='STOP FLOOD: menghentikan pengiriman pesan baru.';
+ res.json({ok:true,message:floodState.message,sent:floodState.sent,failed:floodState.failed});
 });
 
 const port=Number(process.env.PORT)||3000;
