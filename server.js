@@ -249,7 +249,7 @@ app.post('/api/flood/start',async(req,res)=>{
  const permitted=ready.filter(a=>Array.isArray(a.permissions)&&a.permissions.includes('messaging.send')&&a.permissions.includes('rooms.join')&&a.permissions.includes('rooms.leave'));
  if(!permitted.length)return res.status(403).json({ok:false,error:'Tidak ada WebSocket dengan izin rooms.join, rooms.leave, dan messaging.send'});
  Object.assign(floodState,{running:true,stop:false,room,delay,messages,joined:[],sent:0,failed:0,message:`Menyiapkan ${permitted.length} WebSocket untuk FLOOD.`,task:null});
- res.json({ok:true,message:`Dimulai: setiap WebSocket mengirim Flood 1–8 dalam urutan acak masing-masing. Semua delapan teks digunakan satu kali per WS; jeda antar-pesan ${Math.max(125,delay)} ms.`});
+ res.json({ok:true,message:`Dimulai: setiap WebSocket mengulang Flood 1–8 dalam urutan acak sampai STOP FLOOD. Jeda antar-pesan per WS ${Math.max(125,delay)} ms; maksimum 8 pesan/detik/WS.`});
  floodState.task=(async()=>{
   try{
    const joined=await Promise.all(permitted.map(async a=>{
@@ -260,25 +260,28 @@ app.post('/api/flood/start',async(req,res)=>{
    const active=joined.filter(Boolean);
    if(!active.length){floodState.message='Tidak ada WebSocket yang berhasil masuk room.';return}
    floodState.message=`${active.length} WebSocket masuk room; urutan acak dimulai.`;
-   // Each WS gets an independent random permutation, guaranteeing Flood 1–8
-   // are each sent exactly once by every WS in this bounded run.
+   // Each WS independently repeats randomized full cycles of Flood 1–8
+   // until STOP FLOOD is requested. Delay Flood applies between messages
+   // from the same WS; one slow WS does not hold up the others.
    const slotDelay=Math.max(125,delay);
-   const shuffledByWs=new Map(active.map(a=>{
-    const order=messages.map((message,index)=>({message,index}));
-    for(let i=order.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[order[i],order[j]]=[order[j],order[i]];}
-    return [a,order];
+   await Promise.all(active.map(async (a,wsIndex)=>{
+    let cycles=0;
+    while(!floodState.stop){
+     if(a.status!=='ready'||a.ws?.readyState!==WebSocket.OPEN){floodState.failed++;break;}
+     const order=messages.slice();
+     for(let i=order.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[order[i],order[j]]=[order[j],order[i]];}
+     cycles++;
+     for(let mi=0;mi<order.length&&!floodState.stop;mi++){
+      if(a.status!=='ready'||a.ws?.readyState!==WebSocket.OPEN){floodState.failed++;return;}
+      try{a.ws.send(JSON.stringify({type:'room.send_message',room,message:order[mi]}));floodState.sent++;}
+      catch{floodState.failed++;return;}
+      floodState.message=`FLOOD berjalan · WS ${wsIndex+1}/${active.length} · putaran WS ${cycles} · terkirim ${floodState.sent} · gagal ${floodState.failed}`;
+      // Small sleep slices make STOP responsive even with a large configured delay.
+      let remaining=slotDelay;
+      while(remaining>0&&!floodState.stop){const slice=Math.min(100,remaining);await wait(slice);remaining-=slice;}
+     }
+    }
    }));
-   for(let mi=0;mi<8&&!floodState.stop;mi++){
-    await Promise.all(active.map(async a=>{
-     if(floodState.stop)return;
-     if(a.status!=='ready'||a.ws?.readyState!==WebSocket.OPEN){floodState.failed++;return}
-     const message=shuffledByWs.get(a)[mi].message;
-     try{a.ws.send(JSON.stringify({type:'room.send_message',room,message}));floodState.sent++;}
-     catch{floodState.failed++;}
-    }));
-    floodState.message=`FLOOD acak berjalan · tahap ${mi+1}/8 · terkirim ${floodState.sent} · gagal ${floodState.failed}`;
-    if(!floodState.stop&&mi<7)await wait(slotDelay);
-   }
   }catch(e){floodState.message='FLOOD error: '+safe(e.message)}
   finally{
    // Stop means no new sends, then leave every room this run successfully joined.
