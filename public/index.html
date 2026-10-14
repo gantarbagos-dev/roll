@@ -114,15 +114,15 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <textarea id="flood7" maxlength="300" rows="2" placeholder="Flood 7 — teks pesan"></textarea>
   <textarea id="flood8" maxlength="300" rows="2" placeholder="Flood 8 — teks pesan"></textarea>
  </div>
- <label for="delayFlood" class="small">Delay Flood antar-WebSocket (ms)</label>
- <input id="delayFlood" type="number" min="0" max="60000" step="50" value="250" placeholder="Jeda antar-WebSocket (ms)">
+ <label for="delayFlood" class="small">Delay Flood antar-pesan per WS (ms)</label>
+ <input id="delayFlood" type="number" min="0" max="60000" step="50" value="250" placeholder="Jeda antar-pesan per WS (ms)">
  <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
   <button id="saveFlood" class="blue" type="button">SAVE FLOOD</button>
   <button id="loadFlood" type="button">LOAD FLOOD</button>
  </div>
  <input id="floodFileInput" type="file" accept=".json,application/json" hidden>
  <button id="flood" class="roll blue" style="margin-top:8px">FLOOD</button>
- <div class="small" style="margin-top:8px">Semua WS mengirim Flood 1 secara bersamaan, lalu menunggu Delay Flood sebelum semua WS mengirim Flood 2, dan seterusnya sampai Flood 8. Satu kali urutan per penekanan; maksimal 8 pesan/detik/WS. STOP menghentikan pengiriman berikutnya. SAVE FLOOD/LOAD FLOOD menyimpan atau memuat textbox Flood 1–8.</div>
+ <div class="small" style="margin-top:8px">Setiap WS mengulang Flood 1–8 dalam urutan acak miliknya sendiri sampai STOP FLOOD ditekan. Delay Flood adalah jeda antar-pesan pada WS yang sama; WS lain berjalan independen. Maksimal 8 pesan/detik/WS. STOP menghentikan pengiriman berikutnya. SAVE FLOOD/LOAD FLOOD menyimpan atau memuat textbox Flood 1–8.</div>
  <div id="floodstate" class="status"></div>
 </section>
 
