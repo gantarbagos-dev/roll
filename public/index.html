@@ -114,15 +114,17 @@ button:disabled{opacity:.5;cursor:not-allowed}
   <textarea id="flood7" maxlength="300" rows="2" placeholder="Flood 7 — teks pesan"></textarea>
   <textarea id="flood8" maxlength="300" rows="2" placeholder="Flood 8 — teks pesan"></textarea>
  </div>
- <label for="delayFlood" class="small">Delay Flood antar-pesan per WS (ms)</label>
- <input id="delayFlood" type="number" min="0" max="60000" step="50" value="250" placeholder="Jeda antar-pesan per WS (ms)">
+ <label for="delayFlood" class="small">Delay Flood antar-pesan (ms)</label>
+ <input id="delayFlood" type="number" min="125" max="60000" step="50" value="250" placeholder="Jeda antar-pesan (ms)">
+ <label for="delaySocket" class="small" style="display:block;margin-top:8px">Delay Socket sebelum berpindah ke WS berikutnya (ms)</label>
+ <input id="delaySocket" type="number" min="0" max="60000" step="100" value="1000" placeholder="Jeda antar-WebSocket (ms)">
  <div class="grid" style="grid-template-columns:1fr 1fr;gap:8px;margin-top:8px">
   <button id="saveFlood" class="blue" type="button">SAVE FLOOD</button>
   <button id="loadFlood" type="button">LOAD FLOOD</button>
  </div>
  <input id="floodFileInput" type="file" accept=".json,application/json" hidden>
  <button id="flood" class="roll blue" style="margin-top:8px">FLOOD</button>
- <div class="small" style="margin-top:8px">Setiap WS mengulang Flood 1–8 dalam urutan acak miliknya sendiri sampai STOP FLOOD ditekan. Delay Flood adalah jeda antar-pesan pada WS yang sama; WS lain berjalan independen. Maksimal 8 pesan/detik/WS. STOP menghentikan pengiriman berikutnya. SAVE FLOOD/LOAD FLOOD menyimpan atau memuat textbox Flood 1–8.</div>
+ <div class="small" style="margin-top:8px">Semua WS mengirim Flood 1 secara bergiliran, lalu Flood 2 hingga Flood 8. Delay Socket mengatur jeda antar-WS; Delay Flood mengatur jeda setelah semua WS mengirim teks yang sama. Putaran terus berulang sampai STOP FLOOD. STOP menghentikan pengiriman baru. SAVE FLOOD/LOAD FLOOD menyimpan atau memuat pesan dan jeda.</div>
  <div id="floodstate" class="status"></div>
 </section>
 
@@ -173,7 +175,7 @@ async function api(url,body){
 }
 function saveFile(){
  const name=($('fileName').value.trim()||'troop1').replace(/[\\/:*?"<>|]/g,'_');
- const data={version:3,exportedAt:new Date().toISOString(),accounts,room:$('room').value.trim(),delay:Number($('delay').value)||0,delayFlood:Number($('delayFlood').value)||0,...Object.fromEntries(Array.from({length:8},(_,i)=>['flood'+(i+1),$('flood'+(i+1)).value]))};
+ const data={version:3,exportedAt:new Date().toISOString(),accounts,room:$('room').value.trim(),delay:Number($('delay').value)||0,delayFlood:Number($('delayFlood').value)||250,delaySocket:Number($('delaySocket').value)||0,...Object.fromEntries(Array.from({length:8},(_,i)=>['flood'+(i+1),$('flood'+(i+1)).value]))};
  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
  const url=URL.createObjectURL(blob);
  const a=document.createElement('a'); a.href=url; a.download=name.toLowerCase().endsWith('.json')?name:name+'.json';
@@ -194,7 +196,7 @@ function loadFile(file){
    if(data && !Array.isArray(data)){
     $('room').value=String(data.room||'');
     $('delay').value=Number.isFinite(Number(data.delay))?Number(data.delay):1000;
-    $('delayFlood').value=Number.isFinite(Number(data.delayFlood))?Number(data.delayFlood):250; for(let i=1;i<=8;i++)$('flood'+i).value=String(data['flood'+i]||'');
+    $('delayFlood').value=Number.isFinite(Number(data.delayFlood))?Number(data.delayFlood):250; $('delaySocket').value=Number.isFinite(Number(data.delaySocket))?Number(data.delaySocket):1000; for(let i=1;i<=8;i++)$('flood'+i).value=String(data['flood'+i]||'');
    }
    renderInputs();
    $('status').textContent=`File berhasil diload: ${accounts.length} User ID.`;
@@ -212,7 +214,7 @@ $('save').onclick=saveFile;
 $('load').onclick=()=>$('fileInput').click();
 $('fileInput').onchange=e=>loadFile(e.target.files[0]);
 function saveFloodFile(){
- const data={version:1,exportedAt:new Date().toISOString(),delayFlood:Number($('delayFlood').value)||0,...Object.fromEntries(Array.from({length:8},(_,i)=>['flood'+(i+1),$('flood'+(i+1)).value]))};
+ const data={version:1,exportedAt:new Date().toISOString(),delayFlood:Number($('delayFlood').value)||250,delaySocket:Number($('delaySocket').value)||0,...Object.fromEntries(Array.from({length:8},(_,i)=>['flood'+(i+1),$('flood'+(i+1)).value]))};
  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
  const url=URL.createObjectURL(blob);
  const a=document.createElement('a'); a.href=url; a.download='flood-set.json';
@@ -228,7 +230,7 @@ function loadFloodFile(file){
    if(!data||typeof data!=='object'||Array.isArray(data))throw new Error('Format tidak valid');
    if(!Array.from({length:8},(_,i)=>data['flood'+(i+1)]).some(v=>typeof v==='string'))throw new Error('Field Flood tidak ditemukan');
    for(let i=1;i<=8;i++)$('flood'+i).value=typeof data['flood'+i]==='string'?data['flood'+i]:'';
-   if(data.delayFlood!==undefined&&Number.isFinite(Number(data.delayFlood)))$('delayFlood').value=Math.max(0,Math.min(60000,Number(data.delayFlood)));
+   if(data.delayFlood!==undefined&&Number.isFinite(Number(data.delayFlood)))$('delayFlood').value=Math.max(125,Math.min(60000,Number(data.delayFlood))); if(data.delaySocket!==undefined&&Number.isFinite(Number(data.delaySocket)))$('delaySocket').value=Math.max(0,Math.min(60000,Number(data.delaySocket))); 
    $('floodstate').textContent='Set Flood berhasil dimuat.';
   }catch(e){$('floodstate').textContent='Gagal memuat: file JSON bukan set Flood yang valid.';}
   finally{$('floodFileInput').value='';}
@@ -322,7 +324,7 @@ $('flood').onclick=async()=>{
  const messages=Array.from({length:8},(_,i)=>$('flood'+(i+1)).value.trim());
  if(messages.some(v=>!v)){$('floodstate').textContent='Isi semua textbox Flood 1 sampai Flood 8.';return}
  try{
-  const payload={room,delayFlood:Math.max(0,Math.min(60000,Number($('delayFlood').value)||0))};
+  const payload={room,delayFlood:Math.max(125,Math.min(60000,Number($('delayFlood').value)||250)),delaySocket:Math.max(0,Math.min(60000,Number($('delaySocket').value)||0))};
   messages.forEach((v,i)=>payload['flood'+(i+1)]=v);
   const j=await api('/api/flood/start',payload);
   floodRunning=true;$('flood').textContent='STOP FLOOD';$('floodstate').textContent=j.message||'FLOOD berjalan.';
