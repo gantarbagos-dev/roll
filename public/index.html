@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>MigMaster Roll — Unlimited User ID</title>
+<title>Migsock Flooder</title>
 <style>
 *{box-sizing:border-box}
 body{margin:0;background:#080e1d;color:#eef2ff;font-family:Arial,sans-serif}
@@ -58,8 +58,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <section class="card">
  <div class="header">
   <div>
-   <h1>MigMaster Roll</h1>
-   <div class="small" style="margin-top:6px">1 perintah mengendalikan seluruh WebSocket yang sudah login.</div>
+   <h1>Migsock Flooder</h1>
   </div>
   <div class="login-indicator"><span id="loginDot" class="dot offline"></span><span id="loginText">Offline</span></div>
  </div>
@@ -79,7 +78,6 @@ button:disabled{opacity:.5;cursor:not-allowed}
    <button id="login" class="blue">LOGIN</button>
    <button id="logout" class="danger">LOGOUT</button>
  </div>
- <div class="small" style="margin-top:8px">Maksimal 50 User ID/WebSocket. SAVE menyimpan akun + room + delay ROLL + teks FLOOD.</div>
  <div id="status" class="status"></div>
 </section>
 
@@ -98,7 +96,6 @@ button:disabled{opacity:.5;cursor:not-allowed}
 <section class="card">
  <h2>CommandBox</h2>
  <button id="roll" class="roll blue">ROLL</button>
- <div class="small" style="margin-top:8px">ROLL menggunakan maksimal 50 WebSocket yang sudah login: ENTER → LEAVE, lalu jeda antar-WebSocket. Tidak ada LOGIN/LOGOUT di dalam ROLL.</div>
  <div id="rollstate" class="status"></div>
 </section>
 
@@ -124,8 +121,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
  </div>
  <input id="floodFileInput" type="file" accept=".json,application/json" hidden>
  <button id="flood" class="roll blue" style="margin-top:8px">FLOOD</button>
- <div class="small" style="margin-top:8px">Semua WS mengirim Flood 1 secara bergiliran, lalu Flood 2 hingga Flood 8. Delay Socket mengatur jeda antar-WS; Delay Flood mengatur jeda setelah semua WS mengirim teks yang sama. Putaran terus berulang sampai STOP FLOOD. STOP menghentikan pengiriman baru. SAVE FLOOD/LOAD FLOOD menyimpan atau memuat pesan dan jeda.</div>
  <div id="floodstate" class="status"></div>
+ <hr style="border:0;border-top:1px solid #263454;margin:16px 0">
+ <h2>ROLL FLOOD</h2>
+ <label for="delayRollFlood" class="small">Delay ROLL FLOOD antar-WebSocket (ms; minimum 250)</label>
+ <input id="delayRollFlood" type="number" min="250" max="60000" step="250" value="1000" placeholder="Delay antar-WebSocket (ms)">
+ <button id="rollFlood" class="roll blue" style="margin-top:8px">ROLL FLOOD</button>
+ <div id="rollFloodState" class="status"></div>
 </section>
 
 <section class="card">
@@ -138,6 +140,7 @@ button:disabled{opacity:.5;cursor:not-allowed}
 const $=id=>document.getElementById(id);
 let accounts=[];
 let rollRunning=false;
+let rollFloodRunning=false;
 let floodRunning=false;
 
 function setLoginState(state,text){
@@ -305,6 +308,30 @@ $('roll').onclick=async()=>{
   refreshRoll();
  }catch(e){$('rollstate').textContent='ROLL gagal: '+e.message}
 };
+async function refreshRollFlood(){
+ try{
+  const j=await fetch('/api/roll-flood/status',{cache:'no-store'}).then(r=>r.json());
+  rollFloodRunning=!!j.running;
+  $('rollFlood').textContent=rollFloodRunning?'STOP ROLL FLOOD':'ROLL FLOOD';
+  $('rollFloodState').textContent=j.message||'';
+  if(j.running)setTimeout(refreshRollFlood,700);
+ }catch{}
+}
+$('rollFlood').onclick=async()=>{
+ if(rollFloodRunning){try{await api('/api/roll-flood/stop')}catch(e){} await refreshRollFlood();return;}
+ const room=$('room').value.trim();
+ if(!room){$('rollFloodState').textContent='Isi nama room terlebih dahulu.';return;}
+ const messages=Array.from({length:8},(_,i)=>$('flood'+(i+1)).value.trim());
+ if(messages.every(v=>!v)){$('rollFloodState').textContent='Isi minimal satu textbox Flood.';return;}
+ const payload={room,delayRollFlood:Math.max(250,Math.min(60000,Number($('delayRollFlood').value)||1000))};
+ messages.forEach((v,i)=>payload['flood'+(i+1)]=v);
+ try{
+  const j=await api('/api/roll-flood/start',payload);
+  rollFloodRunning=true;$('rollFlood').textContent='STOP ROLL FLOOD';$('rollFloodState').textContent=j.message||'ROLL FLOOD berjalan.';
+  refreshRollFlood();
+ }catch(e){$('rollFloodState').textContent='ROLL FLOOD gagal: '+e.message;}
+};
+
 async function refreshFlood(){
  try{
   const j=await fetch('/api/flood/status',{cache:'no-store'}).then(r=>r.json());
@@ -340,7 +367,7 @@ setInterval(async()=>{
 },2000);
 
 accounts=[{username:'',password:''}];
-renderInputs(); renderStatus([]); setLoginState('offline','Offline'); refreshRoll(); refreshFlood();
+renderInputs(); renderStatus([]); setLoginState('offline','Offline'); refreshRoll(); refreshFlood(); refreshRollFlood();
 </script>
 </body>
 </html>
